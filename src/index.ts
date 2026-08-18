@@ -30,8 +30,45 @@ function createServer(): McpServer {
 
 const handler = createMcpHandler(() => createServer());
 
+/**
+ * Constant-time string comparison (equivalent of Go's
+ * `subtle.ConstantTimeCompare`). Length mismatch returns early because the
+ * length itself is not secret.
+ */
+function timingSafeEqual(a: string, b: string): boolean {
+  const ea = new TextEncoder().encode(a);
+  const eb = new TextEncoder().encode(b);
+  if (ea.length !== eb.length) return false;
+  let diff = 0;
+  for (let i = 0; i < ea.length; i++) diff |= ea[i] ^ eb[i];
+  return diff === 0;
+}
+
+/**
+ * Validates `Authorization: Bearer <MCP_API_KEY>`.
+ *
+ * When MCP_API_KEY is unset the check is skipped (mirrors the upstream Go
+ * server; intended for local development only). wrangler.jsonc lists
+ * MCP_API_KEY under `secrets.required` so `wrangler dev` warns when it is
+ * missing; always set it for deployed environments.
+ */
+function checkBearer(request: Request, key: string | undefined): boolean {
+  if (!key) return true;
+  const header = request.headers.get('Authorization') ?? '';
+  const token = header.startsWith('Bearer ') ? header.slice('Bearer '.length) : header;
+  return timingSafeEqual(token, key);
+}
+
 export default {
   fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    if (!checkBearer(request, env.MCP_API_KEY)) {
+      return Promise.resolve(
+        new Response('Unauthorized', {
+          status: 401,
+          headers: { 'WWW-Authenticate': 'Bearer' },
+        }),
+      );
+    }
     return handler(request, env, ctx);
   },
 };

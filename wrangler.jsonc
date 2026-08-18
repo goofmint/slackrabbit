@@ -7,12 +7,21 @@
   "compatibility_flags": ["nodejs_compat"],
   "kv_namespaces": [
     {
-      "binding": "SLACK_CACHE",
-      // Placeholder: replaced with the real namespace id in T-02
-      // (npx wrangler kv namespace create SLACK_CACHE).
-      "id": "PLACEHOLDER_SET_IN_T02"
+      // Draft binding: no `id` on purpose. `wrangler dev` uses a local
+      // namespace, and `wrangler deploy` provisions a real namespace on
+      // first deploy (see T-02). To bind an existing namespace instead,
+      // add its "id" (and optionally "preview_id") here.
+      "binding": "SLACK_CACHE"
     }
   ],
+  "secrets": {
+    // Bearer token that protects /mcp. Set with `wrangler secret put MCP_API_KEY`.
+    // Listing it here makes `wrangler dev` warn when it is missing and keeps
+    // generated types accurate. If MCP_API_KEY is unset the Worker serves
+    // /mcp WITHOUT authentication (local development only) — always set it
+    // for any deployed environment.
+    "required": ["MCP_API_KEY"]
+  },
   "vars": {
     // Post guard for conversations_add_message.
     // Empty string = the tool is disabled (default).
