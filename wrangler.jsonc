@@ -1,0 +1,36 @@
+{
+  // Cloudflare Workers configuration for slackrabbit.
+  // Stateless MCP server: no Durable Objects required.
+  "name": "slackrabbit",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "kv_namespaces": [
+    {
+      // Draft binding: no `id` on purpose. `wrangler dev` uses a local
+      // namespace, and `wrangler deploy` provisions a real namespace on
+      // first deploy (see T-02). To bind an existing namespace instead,
+      // add its "id" (and optionally "preview_id") here.
+      "binding": "SLACK_CACHE"
+    }
+  ],
+  "secrets": {
+    // Secrets consumed by the Worker. Set each with `wrangler secret put <NAME>`.
+    // NOTE: once this list is defined, `wrangler dev` only loads the listed
+    // keys from .dev.vars, so every secret the Worker reads must appear here.
+    // - MCP_API_KEY: Bearer token protecting /mcp. If unset the Worker serves
+    //   /mcp WITHOUT authentication (local development only) — always set it
+    //   for any deployed environment.
+    // - SLACK_XOXP_TOKEN / SLACK_XOXB_TOKEN: at least one is required; both
+    //   is recommended (search needs xoxp, posting prefers xoxb). A missing
+    //   one only produces a `wrangler dev` warning.
+    "required": ["MCP_API_KEY", "SLACK_XOXP_TOKEN", "SLACK_XOXB_TOKEN"]
+  },
+  "vars": {
+    // Post guard for conversations_add_message.
+    // Empty string = the tool is disabled (default).
+    // "true" / "1" = allow all channels, "C123,C456" = allow list,
+    // "!C123" = deny list. Mixing allow and deny entries is an error.
+    "SLACK_MCP_ADD_MESSAGE_TOOL": ""
+  }
+}
