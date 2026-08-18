@@ -55,8 +55,9 @@ function timingSafeEqual(a: string, b: string): boolean {
 function checkBearer(request: Request, key: string | undefined): boolean {
   if (!key) return true;
   const header = request.headers.get('Authorization') ?? '';
-  const prefix = 'Bearer ';
-  if (!header.startsWith(prefix)) return false;
+  // RFC 7235: the auth-scheme token is case-insensitive.
+  const prefix = 'bearer ';
+  if (!header.slice(0, prefix.length).toLowerCase().startsWith(prefix)) return false;
   return timingSafeEqual(header.slice(prefix.length), key);
 }
 

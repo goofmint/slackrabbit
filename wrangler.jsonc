@@ -15,12 +15,16 @@
     }
   ],
   "secrets": {
-    // Bearer token that protects /mcp. Set with `wrangler secret put MCP_API_KEY`.
-    // Listing it here makes `wrangler dev` warn when it is missing and keeps
-    // generated types accurate. If MCP_API_KEY is unset the Worker serves
-    // /mcp WITHOUT authentication (local development only) — always set it
-    // for any deployed environment.
-    "required": ["MCP_API_KEY"]
+    // Secrets consumed by the Worker. Set each with `wrangler secret put <NAME>`.
+    // NOTE: once this list is defined, `wrangler dev` only loads the listed
+    // keys from .dev.vars, so every secret the Worker reads must appear here.
+    // - MCP_API_KEY: Bearer token protecting /mcp. If unset the Worker serves
+    //   /mcp WITHOUT authentication (local development only) — always set it
+    //   for any deployed environment.
+    // - SLACK_XOXP_TOKEN / SLACK_XOXB_TOKEN: at least one is required; both
+    //   is recommended (search needs xoxp, posting prefers xoxb). A missing
+    //   one only produces a `wrangler dev` warning.
+    "required": ["MCP_API_KEY", "SLACK_XOXP_TOKEN", "SLACK_XOXB_TOKEN"]
   },
   "vars": {
     // Post guard for conversations_add_message.
