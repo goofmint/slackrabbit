@@ -1,0 +1,14 @@
+# Copy to .dev.vars and fill in real values (.dev.vars is gitignored).
+
+# Slack user OAuth token (xoxp-...). Enables conversations_search_messages.
+SLACK_XOXP_TOKEN=xoxp-your-user-token
+
+# Slack bot token (xoxb-...). Preferred for posting (bot identity).
+SLACK_XOXB_TOKEN=xoxb-your-bot-token
+
+# Bearer token protecting the /mcp endpoint. Empty = no auth (local dev only).
+MCP_API_KEY=
+
+# Post guard for conversations_add_message. Empty = tool disabled.
+# "true" = all channels, "C123,C456" = allow list, "!C123" = deny list.
+SLACK_MCP_ADD_MESSAGE_TOOL=

@@ -1,0 +1,22 @@
+{
+  "name": "slackrabbit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Slack MCP server on Cloudflare Workers for CodeRabbit integration",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.0.0",
+    "agents": "0.20.1",
+    "zod": "^4.2.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260818.1",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.123.0"
+  }
+}

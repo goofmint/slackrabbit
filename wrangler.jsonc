@@ -1,0 +1,23 @@
+{
+  // Cloudflare Workers configuration for slackrabbit.
+  // Stateless MCP server: no Durable Objects required.
+  "name": "slackrabbit",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "kv_namespaces": [
+    {
+      "binding": "SLACK_CACHE",
+      // Placeholder: replaced with the real namespace id in T-02
+      // (npx wrangler kv namespace create SLACK_CACHE).
+      "id": "PLACEHOLDER_SET_IN_T02"
+    }
+  ],
+  "vars": {
+    // Post guard for conversations_add_message.
+    // Empty string = the tool is disabled (default).
+    // "true" / "1" = allow all channels, "C123,C456" = allow list,
+    // "!C123" = deny list. Mixing allow and deny entries is an error.
+    "SLACK_MCP_ADD_MESSAGE_TOOL": ""
+  }
+}
