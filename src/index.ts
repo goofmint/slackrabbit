@@ -55,8 +55,9 @@ function timingSafeEqual(a: string, b: string): boolean {
 function checkBearer(request: Request, key: string | undefined): boolean {
   if (!key) return true;
   const header = request.headers.get('Authorization') ?? '';
-  const token = header.startsWith('Bearer ') ? header.slice('Bearer '.length) : header;
-  return timingSafeEqual(token, key);
+  const prefix = 'Bearer ';
+  if (!header.startsWith(prefix)) return false;
+  return timingSafeEqual(header.slice(prefix.length), key);
 }
 
 export default {
