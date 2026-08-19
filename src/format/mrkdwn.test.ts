@@ -109,4 +109,50 @@ describe('githubMarkdownToMrkdwn', () => {
 
     expect(githubMarkdownToMrkdwn(input)).toBe(expected);
   });
+
+  describe('fenced code block grammar', () => {
+    it('keeps a nested triple-backtick span and formatting intact inside a quadruple-backtick fence', () => {
+      const input = ['````ts', '```inner```', '**x**', '````'].join('\n');
+      const expected = ['```', '```inner```', '**x**', '```'].join('\n');
+      expect(githubMarkdownToMrkdwn(input)).toBe(expected);
+    });
+
+    it('protects a tilde-fenced code block', () => {
+      const input = ['~~~', '**x**', '~~~'].join('\n');
+      const expected = ['```', '**x**', '```'].join('\n');
+      expect(githubMarkdownToMrkdwn(input)).toBe(expected);
+    });
+
+    it('protects an unclosed fence to the end of input', () => {
+      const input = ['```', '**x**', 'still code'].join('\n');
+      const expected = ['```', '**x**', 'still code', '```'].join('\n');
+      expect(githubMarkdownToMrkdwn(input)).toBe(expected);
+    });
+  });
+
+  describe('inline code spans with multiple backticks', () => {
+    it('leaves a double-backtick span containing literal asterisks unchanged', () => {
+      expect(githubMarkdownToMrkdwn('``**literal**``')).toBe('``**literal**``');
+    });
+
+    it('leaves a double-backtick span containing an inner single backtick unchanged', () => {
+      expect(githubMarkdownToMrkdwn('`` a`b ``')).toBe('`` a`b ``');
+    });
+
+    it('still converts a plain single-backtick span', () => {
+      expect(githubMarkdownToMrkdwn('`x`')).toBe('`x`');
+    });
+  });
+
+  describe('link destination protection', () => {
+    it('does not convert emphasis-like characters inside a link URL', () => {
+      expect(githubMarkdownToMrkdwn('[doc](https://example.test/*literal*)')).toBe(
+        '<https://example.test/*literal*|doc>',
+      );
+    });
+
+    it('converts emphasis in the link text while leaving the URL untouched', () => {
+      expect(githubMarkdownToMrkdwn('[**bold** text](https://x/_y_)')).toBe('<https://x/_y_|*bold* text>');
+    });
+  });
 });
