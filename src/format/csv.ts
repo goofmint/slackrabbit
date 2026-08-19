@@ -9,7 +9,11 @@
  * - Fields are quoted only when they contain a comma, newline (`\n`), carriage
  *   return (`\r`), or double quote (`"`). Embedded double quotes are escaped by
  *   doubling them (`"` -> `""`).
- * - Lines are joined with `\n` with no trailing newline.
+ * - Records are joined with LF (`\n`), not CRLF, with no trailing newline.
+ *   This is deliberate: the output is consumed by an LLM over MCP rather
+ *   than written to a .csv file, and it matches the upstream Go server
+ *   (`encoding/csv` with `UseCRLF=false`). Field escaping still follows
+ *   RFC 4180 (quoting, `""`, embedded newlines preserved).
  */
 export function toCsv(headers: string[], rows: Array<Record<string, unknown>>): string {
   const lines: string[] = [];
