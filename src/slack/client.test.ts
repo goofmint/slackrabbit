@@ -185,3 +185,43 @@ describe('SlackClient', () => {
     );
   });
 });
+
+describe('Retry-After edge cases', () => {
+  it('falls back to 1s when Retry-After is an empty string', async () => {
+    const sleep = vi.fn(async () => undefined);
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response('rate limited', { status: 429, headers: { 'Retry-After': '' } }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true, channels: [] }), { status: 200 }),
+      );
+    const client = new SlackClient(makeCfg({}), {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      sleep,
+    });
+
+    await client.conversationsList();
+    expect(sleep).toHaveBeenCalledWith(1000);
+  });
+
+  it('falls back to 1s when Retry-After is negative', async () => {
+    const sleep = vi.fn(async () => undefined);
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response('rate limited', { status: 429, headers: { 'Retry-After': '-5' } }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: true, channels: [] }), { status: 200 }),
+      );
+    const client = new SlackClient(makeCfg({}), {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      sleep,
+    });
+
+    await client.conversationsList();
+    expect(sleep).toHaveBeenCalledWith(1000);
+  });
+});

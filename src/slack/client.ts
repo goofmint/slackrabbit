@@ -229,10 +229,13 @@ export class SlackClient {
 
       if (response.status === 429) {
         if (attempt < MAX_RETRIES) {
+          // Floor at 1s: a missing/empty/non-numeric/non-positive
+          // Retry-After must not turn into a zero-delay hot retry
+          // (Number('') === 0, and negative values are meaningless here).
           const retryAfterHeader = response.headers.get('Retry-After');
-          const retryAfterSeconds = Number(retryAfterHeader);
+          const retryAfterSeconds = Number(retryAfterHeader?.trim() || 'NaN');
           const waitSeconds =
-            retryAfterHeader === null || Number.isNaN(retryAfterSeconds) ? 1 : retryAfterSeconds;
+            Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0 ? retryAfterSeconds : 1;
           await this.sleep(waitSeconds * 1000);
           continue;
         }
