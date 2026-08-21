@@ -1,0 +1,353 @@
+/**
+ * Converts GitHub Flavored Markdown (as used in CodeRabbit / GitHub review
+ * comments) into Slack's `mrkdwn` format.
+ *
+ * The conversion runs in three stages:
+ *
+ * 1. **Stash code and link regions.** Fenced code blocks, inline code
+ *    spans, and links are cut out of the input and replaced with unique
+ *    placeholder tokens (built from a NUL byte so they cannot collide with
+ *    anything a human or a markdown renderer would type). This must happen
+ *    first because code review notifications routinely contain snippets
+ *    like `**ptr` (a C pointer dereference) or `_leading_underscore`
+ *    identifiers that look exactly like markdown emphasis syntax, and link
+ *    URLs routinely contain characters (`*`, `_`, `~`) that must never be
+ *    touched by the emphasis passes. If those were left in place, stage 2
+ *    would happily "convert" them and corrupt the code or the URL.
+ *      - Fenced code blocks are found with a small line-by-line state
+ *        machine (not a single regex) so the full CommonMark fence grammar
+ *        is honored: an opening fence is a line starting with 3+ backticks
+ *        OR 3+ tildes (optionally indented by up to 3 spaces, and
+ *        optionally followed by an info string), and the matching closing
+ *        fence must use the same character with a length greater than or
+ *        equal to the opening length (also optionally indented by up to 3
+ *        spaces). A fence indented 4+ spaces is not recognized as a fence
+ *        at all - per CommonMark that's an indented code block, a
+ *        construct this converter deliberately does not implement, so
+ *        such lines are left alone as plain text. A fence with no matching
+ *        close runs to the end of the input. The block's contents are
+ *        preserved verbatim (including any indentation); only the fence
+ *        itself is normalized to Slack's plain ``` with the info string
+ *        dropped.
+ *      - Inline code spans are matched by delimiter run length (a run of
+ *        N backticks opens, the next run of exactly N backticks - not part
+ *        of a longer run - closes), matching CommonMark's code span rule
+ *        instead of assuming a single backtick. Per CommonMark, a code
+ *        span may contain newlines; this implementation allows that too
+ *        rather than restricting spans to a single line.
+ *      - Links (`[text](url)`, excluding image syntax `![alt](url)`) are
+ *        stashed as a `{ text, url }` pair so the URL can be kept
+ *        completely verbatim through stage 2, while the link text is run
+ *        back through the same emphasis conversion in stage 3 so
+ *        `[**bold**](url)` still renders bold inside the link. The
+ *        destination is not matched by a single regex (which would stop
+ *        at the first `)`); it's walked character-by-character, tracking
+ *        backslash escapes and parenthesis nesting depth, so URLs that
+ *        themselves contain parentheses (e.g.
+ *        `https://example.test/a_(b)_c`) are captured in full.
+ * 2. **Convert the remaining text.** With code and links safely out of the
+ *    way, ordinary GFM constructs (headings, bold, italic, strikethrough)
+ *    are rewritten into their Slack `mrkdwn` equivalents.
+ * 3. **Restore the stashed regions.** Links are restored first (their
+ *    display text converted through the same emphasis pipeline as stage 2,
+ *    their URL untouched), then inline code, then fenced code blocks,
+ *    putting the original (untouched) code back into the converted text.
+ *    Fenced code blocks are restored without their language tag, since
+ *    Slack's ``` fences don't support one.
+ */
+
+const NUL = String.fromCharCode(0);
+
+const CODE_BLOCK_TOKEN = (index: number): string => `${NUL}CODEBLOCK${index}${NUL}`;
+const INLINE_CODE_TOKEN = (index: number): string => `${NUL}INLINE${index}${NUL}`;
+const LINK_TOKEN = (index: number): string => `${NUL}LINK${index}${NUL}`;
+
+const CODE_BLOCK_TOKEN_PATTERN = new RegExp(`${NUL}CODEBLOCK(\\d+)${NUL}`, 'g');
+const INLINE_CODE_TOKEN_PATTERN = new RegExp(`${NUL}INLINE(\\d+)${NUL}`, 'g');
+const LINK_TOKEN_PATTERN = new RegExp(`${NUL}LINK(\\d+)${NUL}`, 'g');
+
+// A code span opens with a run of N backticks and closes with the next run
+// of exactly N backticks that isn't part of a longer run (CommonMark code
+// span rule). Newlines are allowed inside a span, matching CommonMark.
+const INLINE_CODE_PATTERN = /(`+)([\s\S]*?)\1(?!`)/g;
+
+// A line that opens a fenced code block: 3+ backticks or 3+ tildes,
+// optionally preceded by up to 3 spaces of indentation (CommonMark allows
+// an opening fence to be indented by up to 3 spaces before it's instead
+// treated as an indented code block), and optionally followed by an info
+// string.
+const FENCE_OPEN_PATTERN = /^ {0,3}(`{3,}|~{3,})/;
+
+// Matches the opening `[text](` of a link, excluding image syntax
+// `![alt](url)` via the negative lookbehind. The destination itself is not
+// matched by this pattern - it's walked character-by-character by
+// `findLinkDestinationEnd` below so that parentheses inside the URL don't
+// prematurely close the link.
+// Link labels and destinations are both matched by scanners (see
+// findLinkLabelEnd / findLinkDestinationEnd) so that nested/escaped
+// brackets in the label and parentheses in the URL are handled.
+
+// Temporary marker (SOH) used between the bold and italic passes so that a
+// `**bold**` span already converted to `*bold*`-shaped text doesn't get
+// re-matched (and mangled) by the italic pass that runs right after it.
+const SOH = String.fromCharCode(1);
+const BOLD_MARKER_PATTERN = new RegExp(`${SOH}([\\s\\S]*?)${SOH}`, 'g');
+
+const HEADING_PATTERN = /^#{1,6} +(.*)$/gm;
+const DOUBLE_STAR_BOLD_PATTERN = /\*\*([^*]+?)\*\*/g;
+const DOUBLE_UNDERSCORE_BOLD_PATTERN = /__([^_]+?)__/g;
+const SINGLE_STAR_ITALIC_PATTERN = /\*([^*\n]+?)\*/g;
+const STRIKETHROUGH_PATTERN = /~~([^~]+?)~~/g;
+
+interface StashedLink {
+  text: string;
+  url: string;
+}
+
+/**
+ * Stashes fenced code blocks using a line-by-line scan so the full
+ * CommonMark fence grammar (3+ backticks or tildes, closing fence must
+ * match the opening character with length >= the opening length, unclosed
+ * fences run to EOF) is honored rather than just exactly-three-backtick
+ * fences. The block content is preserved verbatim; the emitted fence is
+ * always normalized to plain ``` with the info string dropped.
+ */
+function stashCodeBlocks(text: string, codeBlocks: string[]): string {
+  const lines = text.split('\n');
+  const output: string[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const openMatch = FENCE_OPEN_PATTERN.exec(lines[i]);
+    if (!openMatch) {
+      output.push(lines[i]);
+      i++;
+      continue;
+    }
+
+    const fenceChar = openMatch[1][0];
+    const fenceLen = openMatch[1].length;
+    // The closing fence may likewise be indented by up to 3 spaces; it
+    // must use the same character with a length >= the opening length.
+    const closePattern = new RegExp(`^ {0,3}${fenceChar}{${fenceLen},}\\s*$`);
+
+    const contentLines: string[] = [];
+    let j = i + 1;
+    while (j < lines.length && !closePattern.test(lines[j])) {
+      contentLines.push(lines[j]);
+      j++;
+    }
+    const closed = j < lines.length;
+    const inner = contentLines.length > 0 ? contentLines.join('\n') + '\n' : '';
+
+    const token = CODE_BLOCK_TOKEN(codeBlocks.length);
+    codeBlocks.push('```\n' + inner + '```');
+    output.push(token);
+
+    // If unclosed, the block (and thus the scan) runs to end of input.
+    i = closed ? j + 1 : lines.length;
+  }
+
+  return output.join('\n');
+}
+
+/** Stashes inline code spans, matching by delimiter run length. */
+function stashInlineCode(text: string, inlineCodes: string[]): string {
+  return text.replace(INLINE_CODE_PATTERN, (_match: string, backticks: string, inner: string): string => {
+    const token = INLINE_CODE_TOKEN(inlineCodes.length);
+    inlineCodes.push(backticks + inner + backticks);
+    return token;
+  });
+}
+
+/**
+ * Starting right after the `(` that opens a link destination, walks the
+ * destination character-by-character and returns the index of the `)`
+ * that closes it, or -1 if the destination is never closed. A `\` escapes
+ * the next character (so `\)` does not close the link), a `(` increases
+ * the nesting depth, and a `)` either decreases the depth (if nested) or
+ * closes the link (if at depth 0).
+ */
+function findLinkDestinationEnd(text: string, start: number): number {
+  let depth = 0;
+  let i = start;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '\\' && i + 1 < text.length) {
+      i += 2;
+      continue;
+    }
+    if (ch === '(') {
+      depth++;
+    } else if (ch === ')') {
+      if (depth === 0) return i;
+      depth--;
+    }
+    i++;
+  }
+  return -1;
+}
+
+/**
+ * Finds the `]` that closes a link label opened at `start` (the index just
+ * after the opening `[`), tracking backslash escapes (`\]` does not close)
+ * and square-bracket nesting depth (CommonMark allows `[outer [inner]]`).
+ * Returns the index of the closing `]`, or -1 when unterminated.
+ */
+function findLinkLabelEnd(text: string, start: number): number {
+  let depth = 0;
+  let i = start;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '\\' && i + 1 < text.length) {
+      i += 2;
+      continue;
+    }
+    if (ch === '[') {
+      depth++;
+    } else if (ch === ']') {
+      if (depth === 0) return i;
+      depth--;
+    }
+    i++;
+  }
+  return -1;
+}
+
+/**
+ * Stashes links, keeping their text and URL separate. Both the label and
+ * the destination are matched by scanners rather than regexes: the label
+ * scanner (`findLinkLabelEnd`) handles escaped and nested square brackets
+ * (`[a\]b](url)`, `[outer [inner]](url)`), and the destination scanner
+ * (`findLinkDestinationEnd`) handles parentheses that a `[^)]+`-style
+ * pattern would stop at prematurely. Image syntax (`![alt](url)`) is
+ * skipped and left verbatim.
+ */
+/**
+ * True when the `!` right before position `bangIndex` marks image syntax.
+ * A `!` preceded by an odd number of consecutive backslashes is escaped
+ * (`\![x](y)` is a literal `!` followed by a link, not an image).
+ */
+function isImageBang(text: string, bangIndex: number): boolean {
+  if (bangIndex < 0 || text[bangIndex] !== '!') return false;
+  let backslashes = 0;
+  for (let j = bangIndex - 1; j >= 0 && text[j] === '\\'; j--) backslashes++;
+  return backslashes % 2 === 0;
+}
+
+function stashLinks(text: string, links: StashedLink[]): string {
+  let result = '';
+  let lastIndex = 0;
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '\\' && i + 1 < text.length) {
+      // An escaped `!` may still introduce a link ("\![doc](url)"), so a
+      // `[` right after it must not be skipped by the escape hop.
+      if (!(text[i + 1] === '!' && text[i + 2] === '[')) {
+        i += 2;
+        continue;
+      }
+      i += 2; // land on the `[`; isImageBang below sees the escaped `!`
+      continue;
+    }
+    if (ch !== '[' || isImageBang(text, i - 1)) {
+      i++;
+      continue;
+    }
+
+    const labelEnd = findLinkLabelEnd(text, i + 1);
+    if (labelEnd === -1 || text[labelEnd + 1] !== '(') {
+      i++;
+      continue;
+    }
+    const destEnd = findLinkDestinationEnd(text, labelEnd + 2);
+    if (destEnd === -1) {
+      // Unterminated destination - not a valid link. Keep scanning after
+      // the opening bracket.
+      i++;
+      continue;
+    }
+
+    result += text.slice(lastIndex, i);
+    const token = LINK_TOKEN(links.length);
+    links.push({ text: text.slice(i + 1, labelEnd), url: text.slice(labelEnd + 2, destEnd) });
+    result += token;
+
+    lastIndex = destEnd + 1;
+    i = lastIndex;
+  }
+  result += text.slice(lastIndex);
+  return result;
+}
+
+/**
+ * Converts GFM headings/bold/italic/strikethrough into Slack `mrkdwn`.
+ * Shared between the main document pass and, during link restoration, the
+ * stashed link display text (so `[**bold**](url)` still renders bold).
+ */
+function convertEmphasis(input: string): string {
+  let text = input;
+
+  // Headings -> bold line. Uses the same temporary marker as bold below
+  // (and is resolved together with it) so the single-asterisk italic pass
+  // doesn't re-match the `*` it would otherwise produce here.
+  text = text.replace(HEADING_PATTERN, `${SOH}$1${SOH}`);
+
+  // Bold (`**x**` / `__x__`) -> temporary marker, converted to `*x*` after
+  // the italic pass below runs.
+  text = text.replace(DOUBLE_STAR_BOLD_PATTERN, `${SOH}$1${SOH}`);
+  text = text.replace(DOUBLE_UNDERSCORE_BOLD_PATTERN, `${SOH}$1${SOH}`);
+
+  // Italic. Only single-asterisk `*x*` needs conversion; underscore italic
+  // `_x_` is already valid Slack mrkdwn and is left untouched.
+  text = text.replace(SINGLE_STAR_ITALIC_PATTERN, '_$1_');
+
+  // Resolve the heading/bold marker now that the italic pass can no
+  // longer see it.
+  text = text.replace(BOLD_MARKER_PATTERN, '*$1*');
+
+  // Strikethrough.
+  text = text.replace(STRIKETHROUGH_PATTERN, '~$1~');
+
+  return text;
+}
+
+/**
+ * Converts a GitHub Flavored Markdown string into Slack `mrkdwn`.
+ *
+ * See the module-level comment for the three-stage design.
+ */
+export function githubMarkdownToMrkdwn(md: string): string {
+  const codeBlocks: string[] = [];
+  const inlineCodes: string[] = [];
+  const links: StashedLink[] = [];
+
+  // Stage 1: stash fenced code blocks, then inline code spans, then links
+  // (in that order, so link text/URLs already have any code spans they
+  // contain replaced with opaque tokens before we snapshot them).
+  let text = stashCodeBlocks(md, codeBlocks);
+  text = stashInlineCode(text, inlineCodes);
+  text = stashLinks(text, links);
+
+  // Stage 2: convert the remaining text.
+  text = convertEmphasis(text);
+
+  // Stage 3a: restore links. The URL is restored verbatim; the display
+  // text is converted through the same emphasis pipeline used above.
+  text = text.replace(LINK_TOKEN_PATTERN, (_match: string, index: string): string => {
+    const link = links[Number(index)];
+    if (!link) return '';
+    return `<${link.url}|${convertEmphasis(link.text)}>`;
+  });
+
+  // Stage 3b: restore inline code, then fenced code blocks.
+  text = text.replace(INLINE_CODE_TOKEN_PATTERN, (_match: string, index: string): string => {
+    return inlineCodes[Number(index)] ?? '';
+  });
+  text = text.replace(CODE_BLOCK_TOKEN_PATTERN, (_match: string, index: string): string => {
+    return codeBlocks[Number(index)] ?? '';
+  });
+
+  return text;
+}

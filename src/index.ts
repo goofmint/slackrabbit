@@ -1,18 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import { CfWorkerJsonSchemaValidator } from '@modelcontextprotocol/server/validators/cf-worker';
 import { createMcpHandler } from 'agents/mcp/server';
-
-/**
- * Worker bindings. Secrets (tokens, API key) are set via `wrangler secret put`;
- * SLACK_MCP_ADD_MESSAGE_TOOL comes from `vars` in wrangler.jsonc.
- */
-export type Env = {
-  SLACK_CACHE: KVNamespace;
-  SLACK_XOXP_TOKEN?: string;
-  SLACK_XOXB_TOKEN?: string;
-  MCP_API_KEY?: string;
-  SLACK_MCP_ADD_MESSAGE_TOOL?: string;
-};
+import type { Env } from './env';
 
 /**
  * Creates a fresh McpServer per request (createMcpHandler is stateless).
