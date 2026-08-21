@@ -223,6 +223,18 @@ function findLinkLabelEnd(text: string, start: number): number {
  * pattern would stop at prematurely. Image syntax (`![alt](url)`) is
  * skipped and left verbatim.
  */
+/**
+ * True when the `!` right before position `bangIndex` marks image syntax.
+ * A `!` preceded by an odd number of consecutive backslashes is escaped
+ * (`\![x](y)` is a literal `!` followed by a link, not an image).
+ */
+function isImageBang(text: string, bangIndex: number): boolean {
+  if (bangIndex < 0 || text[bangIndex] !== '!') return false;
+  let backslashes = 0;
+  for (let j = bangIndex - 1; j >= 0 && text[j] === '\\'; j--) backslashes++;
+  return backslashes % 2 === 0;
+}
+
 function stashLinks(text: string, links: StashedLink[]): string {
   let result = '';
   let lastIndex = 0;
@@ -230,10 +242,16 @@ function stashLinks(text: string, links: StashedLink[]): string {
   while (i < text.length) {
     const ch = text[i];
     if (ch === '\\' && i + 1 < text.length) {
-      i += 2;
+      // An escaped `!` may still introduce a link ("\![doc](url)"), so a
+      // `[` right after it must not be skipped by the escape hop.
+      if (!(text[i + 1] === '!' && text[i + 2] === '[')) {
+        i += 2;
+        continue;
+      }
+      i += 2; // land on the `[`; isImageBang below sees the escaped `!`
       continue;
     }
-    if (ch !== '[' || (i > 0 && text[i - 1] === '!')) {
+    if (ch !== '[' || isImageBang(text, i - 1)) {
       i++;
       continue;
     }

@@ -217,3 +217,16 @@ describe('link labels with brackets', () => {
     expect(githubMarkdownToMrkdwn(input)).toBe(input);
   });
 });
+
+describe('escaped image bang', () => {
+  it('converts a link after an escaped bang (odd backslashes)', () => {
+    expect(githubMarkdownToMrkdwn('\\![doc](https://example.test)')).toBe(
+      '\\!<https://example.test|doc>',
+    );
+  });
+
+  it('still excludes an image after an escaped backslash (even backslashes)', () => {
+    const input = '\\\\![alt](https://example.test/img.png)';
+    expect(githubMarkdownToMrkdwn(input)).toBe(input);
+  });
+});
