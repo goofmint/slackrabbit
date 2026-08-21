@@ -83,7 +83,9 @@ const FENCE_OPEN_PATTERN = /^ {0,3}(`{3,}|~{3,})/;
 // matched by this pattern - it's walked character-by-character by
 // `findLinkDestinationEnd` below so that parentheses inside the URL don't
 // prematurely close the link.
-const LINK_OPEN_PATTERN = /(?<!!)\[([^\]]*)\]\(/g;
+// Link labels and destinations are both matched by scanners (see
+// findLinkLabelEnd / findLinkDestinationEnd) so that nested/escaped
+// brackets in the label and parentheses in the URL are handled.
 
 // Temporary marker (SOH) used between the bold and italic passes so that a
 // `**bold**` span already converted to `*bold*`-shaped text doesn't get
@@ -187,34 +189,75 @@ function findLinkDestinationEnd(text: string, start: number): number {
 }
 
 /**
- * Stashes links, keeping their text and URL separate. The link text is
- * matched with a plain regex ([^\]]* is sufficient - link text doesn't
- * nest brackets in practice), but the destination is matched with
- * `findLinkDestinationEnd` above rather than a regex, since destinations
- * routinely contain parentheses that a `[^)]+`-style pattern would stop
- * at prematurely.
+ * Finds the `]` that closes a link label opened at `start` (the index just
+ * after the opening `[`), tracking backslash escapes (`\]` does not close)
+ * and square-bracket nesting depth (CommonMark allows `[outer [inner]]`).
+ * Returns the index of the closing `]`, or -1 when unterminated.
+ */
+function findLinkLabelEnd(text: string, start: number): number {
+  let depth = 0;
+  let i = start;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '\\' && i + 1 < text.length) {
+      i += 2;
+      continue;
+    }
+    if (ch === '[') {
+      depth++;
+    } else if (ch === ']') {
+      if (depth === 0) return i;
+      depth--;
+    }
+    i++;
+  }
+  return -1;
+}
+
+/**
+ * Stashes links, keeping their text and URL separate. Both the label and
+ * the destination are matched by scanners rather than regexes: the label
+ * scanner (`findLinkLabelEnd`) handles escaped and nested square brackets
+ * (`[a\]b](url)`, `[outer [inner]](url)`), and the destination scanner
+ * (`findLinkDestinationEnd`) handles parentheses that a `[^)]+`-style
+ * pattern would stop at prematurely. Image syntax (`![alt](url)`) is
+ * skipped and left verbatim.
  */
 function stashLinks(text: string, links: StashedLink[]): string {
   let result = '';
   let lastIndex = 0;
-  LINK_OPEN_PATTERN.lastIndex = 0;
-  let match: RegExpExecArray | null;
-  while ((match = LINK_OPEN_PATTERN.exec(text)) !== null) {
-    const destStart = LINK_OPEN_PATTERN.lastIndex;
-    const destEnd = findLinkDestinationEnd(text, destStart);
-    if (destEnd === -1) {
-      // Unterminated destination - not a valid link. Leave the `[text](`
-      // as-is and keep scanning after it.
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '\\' && i + 1 < text.length) {
+      i += 2;
+      continue;
+    }
+    if (ch !== '[' || (i > 0 && text[i - 1] === '!')) {
+      i++;
       continue;
     }
 
-    result += text.slice(lastIndex, match.index);
+    const labelEnd = findLinkLabelEnd(text, i + 1);
+    if (labelEnd === -1 || text[labelEnd + 1] !== '(') {
+      i++;
+      continue;
+    }
+    const destEnd = findLinkDestinationEnd(text, labelEnd + 2);
+    if (destEnd === -1) {
+      // Unterminated destination - not a valid link. Keep scanning after
+      // the opening bracket.
+      i++;
+      continue;
+    }
+
+    result += text.slice(lastIndex, i);
     const token = LINK_TOKEN(links.length);
-    links.push({ text: match[1], url: text.slice(destStart, destEnd) });
+    links.push({ text: text.slice(i + 1, labelEnd), url: text.slice(labelEnd + 2, destEnd) });
     result += token;
 
     lastIndex = destEnd + 1;
-    LINK_OPEN_PATTERN.lastIndex = lastIndex;
+    i = lastIndex;
   }
   result += text.slice(lastIndex);
   return result;

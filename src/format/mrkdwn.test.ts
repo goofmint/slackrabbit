@@ -198,3 +198,22 @@ describe('githubMarkdownToMrkdwn', () => {
     });
   });
 });
+
+describe('link labels with brackets', () => {
+  it('converts a label containing a nested bracket pair', () => {
+    expect(githubMarkdownToMrkdwn('[outer [inner]](https://example.test)')).toBe(
+      '<https://example.test|outer [inner]>',
+    );
+  });
+
+  it('converts a label containing an escaped closing bracket', () => {
+    expect(githubMarkdownToMrkdwn('[a\\]b](https://example.test)')).toBe(
+      '<https://example.test|a\\]b>',
+    );
+  });
+
+  it('still excludes image syntax with a bracketed alt text', () => {
+    const input = '![alt [x]](https://example.test/img.png)';
+    expect(githubMarkdownToMrkdwn(input)).toBe(input);
+  });
+});
