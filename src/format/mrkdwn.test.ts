@@ -128,6 +128,28 @@ describe('githubMarkdownToMrkdwn', () => {
       const expected = ['```', '**x**', 'still code', '```'].join('\n');
       expect(githubMarkdownToMrkdwn(input)).toBe(expected);
     });
+
+    it('protects a fence indented by up to 3 spaces on both the opening and closing lines', () => {
+      const input = ['  ```', '**x**', '  ```'].join('\n');
+      const expected = ['```', '**x**', '```'].join('\n');
+      expect(githubMarkdownToMrkdwn(input)).toBe(expected);
+    });
+
+    it('protects a fence opened at column 0 and closed with a 2-space-indented fence', () => {
+      const input = ['```', '**x**', '  ```'].join('\n');
+      const expected = ['```', '**x**', '```'].join('\n');
+      expect(githubMarkdownToMrkdwn(input)).toBe(expected);
+    });
+
+    it('does not treat a 4-space-indented fence as a fence (CommonMark indented code block, deliberately unsupported)', () => {
+      // With 4+ spaces of indentation this is an indented code block per
+      // CommonMark, a construct this converter does not implement. The
+      // line is left alone as plain text rather than being recognized as
+      // a fence opener, so content after it still converts normally.
+      const input = ['    ```', '**bold**'].join('\n');
+      const expected = ['    ```', '*bold*'].join('\n');
+      expect(githubMarkdownToMrkdwn(input)).toBe(expected);
+    });
   });
 
   describe('inline code spans with multiple backticks', () => {
@@ -153,6 +175,26 @@ describe('githubMarkdownToMrkdwn', () => {
 
     it('converts emphasis in the link text while leaving the URL untouched', () => {
       expect(githubMarkdownToMrkdwn('[**bold** text](https://x/_y_)')).toBe('<https://x/_y_|*bold* text>');
+    });
+
+    it('keeps a parenthesis inside the link destination instead of truncating at the first `)`', () => {
+      expect(githubMarkdownToMrkdwn('[doc](https://example.test/a_(b)_*literal*)')).toBe(
+        '<https://example.test/a_(b)_*literal*|doc>',
+      );
+    });
+
+    it('handles a destination with nested parentheses', () => {
+      expect(githubMarkdownToMrkdwn('[doc](x(y)z)')).toBe('<x(y)z|doc>');
+    });
+
+    it('does not let an escaped `\\)` inside the destination close the link early', () => {
+      expect(githubMarkdownToMrkdwn('[doc](a\\)b)')).toBe('<a\\)b|doc>');
+    });
+
+    it('still excludes image syntax `![alt](url)` when the destination contains parentheses', () => {
+      expect(githubMarkdownToMrkdwn('![alt](https://example.test/a_(b)_c)')).toBe(
+        '![alt](https://example.test/a_(b)_c)',
+      );
     });
   });
 });

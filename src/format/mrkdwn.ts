@@ -17,12 +17,18 @@
  *      - Fenced code blocks are found with a small line-by-line state
  *        machine (not a single regex) so the full CommonMark fence grammar
  *        is honored: an opening fence is a line starting with 3+ backticks
- *        OR 3+ tildes (optionally followed by an info string), and the
- *        matching closing fence must use the same character with a length
- *        greater than or equal to the opening length. A fence with no
- *        matching close runs to the end of the input. The block's contents
- *        are preserved verbatim; only the fence itself is normalized to
- *        Slack's plain ``` with the info string dropped.
+ *        OR 3+ tildes (optionally indented by up to 3 spaces, and
+ *        optionally followed by an info string), and the matching closing
+ *        fence must use the same character with a length greater than or
+ *        equal to the opening length (also optionally indented by up to 3
+ *        spaces). A fence indented 4+ spaces is not recognized as a fence
+ *        at all - per CommonMark that's an indented code block, a
+ *        construct this converter deliberately does not implement, so
+ *        such lines are left alone as plain text. A fence with no matching
+ *        close runs to the end of the input. The block's contents are
+ *        preserved verbatim (including any indentation); only the fence
+ *        itself is normalized to Slack's plain ``` with the info string
+ *        dropped.
  *      - Inline code spans are matched by delimiter run length (a run of
  *        N backticks opens, the next run of exactly N backticks - not part
  *        of a longer run - closes), matching CommonMark's code span rule
@@ -33,7 +39,12 @@
  *        stashed as a `{ text, url }` pair so the URL can be kept
  *        completely verbatim through stage 2, while the link text is run
  *        back through the same emphasis conversion in stage 3 so
- *        `[**bold**](url)` still renders bold inside the link.
+ *        `[**bold**](url)` still renders bold inside the link. The
+ *        destination is not matched by a single regex (which would stop
+ *        at the first `)`); it's walked character-by-character, tracking
+ *        backslash escapes and parenthesis nesting depth, so URLs that
+ *        themselves contain parentheses (e.g.
+ *        `https://example.test/a_(b)_c`) are captured in full.
  * 2. **Convert the remaining text.** With code and links safely out of the
  *    way, ordinary GFM constructs (headings, bold, italic, strikethrough)
  *    are rewritten into their Slack `mrkdwn` equivalents.
@@ -60,12 +71,19 @@ const LINK_TOKEN_PATTERN = new RegExp(`${NUL}LINK(\\d+)${NUL}`, 'g');
 // span rule). Newlines are allowed inside a span, matching CommonMark.
 const INLINE_CODE_PATTERN = /(`+)([\s\S]*?)\1(?!`)/g;
 
-// A line that opens a fenced code block: 3+ backticks or 3+ tildes at the
-// start of the line, optionally followed by an info string.
-const FENCE_OPEN_PATTERN = /^(`{3,}|~{3,})/;
+// A line that opens a fenced code block: 3+ backticks or 3+ tildes,
+// optionally preceded by up to 3 spaces of indentation (CommonMark allows
+// an opening fence to be indented by up to 3 spaces before it's instead
+// treated as an indented code block), and optionally followed by an info
+// string.
+const FENCE_OPEN_PATTERN = /^ {0,3}(`{3,}|~{3,})/;
 
-// Negative lookbehind excludes image syntax `![alt](url)`.
-const LINK_PATTERN = /(?<!!)\[([^\]]*)\]\(([^)]+)\)/g;
+// Matches the opening `[text](` of a link, excluding image syntax
+// `![alt](url)` via the negative lookbehind. The destination itself is not
+// matched by this pattern - it's walked character-by-character by
+// `findLinkDestinationEnd` below so that parentheses inside the URL don't
+// prematurely close the link.
+const LINK_OPEN_PATTERN = /(?<!!)\[([^\]]*)\]\(/g;
 
 // Temporary marker (SOH) used between the bold and italic passes so that a
 // `**bold**` span already converted to `*bold*`-shaped text doesn't get
@@ -107,7 +125,9 @@ function stashCodeBlocks(text: string, codeBlocks: string[]): string {
 
     const fenceChar = openMatch[1][0];
     const fenceLen = openMatch[1].length;
-    const closePattern = new RegExp(`^${fenceChar}{${fenceLen},}\\s*$`);
+    // The closing fence may likewise be indented by up to 3 spaces; it
+    // must use the same character with a length >= the opening length.
+    const closePattern = new RegExp(`^ {0,3}${fenceChar}{${fenceLen},}\\s*$`);
 
     const contentLines: string[] = [];
     let j = i + 1;
@@ -138,13 +158,66 @@ function stashInlineCode(text: string, inlineCodes: string[]): string {
   });
 }
 
-/** Stashes links, keeping their text and URL separate. */
+/**
+ * Starting right after the `(` that opens a link destination, walks the
+ * destination character-by-character and returns the index of the `)`
+ * that closes it, or -1 if the destination is never closed. A `\` escapes
+ * the next character (so `\)` does not close the link), a `(` increases
+ * the nesting depth, and a `)` either decreases the depth (if nested) or
+ * closes the link (if at depth 0).
+ */
+function findLinkDestinationEnd(text: string, start: number): number {
+  let depth = 0;
+  let i = start;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '\\' && i + 1 < text.length) {
+      i += 2;
+      continue;
+    }
+    if (ch === '(') {
+      depth++;
+    } else if (ch === ')') {
+      if (depth === 0) return i;
+      depth--;
+    }
+    i++;
+  }
+  return -1;
+}
+
+/**
+ * Stashes links, keeping their text and URL separate. The link text is
+ * matched with a plain regex ([^\]]* is sufficient - link text doesn't
+ * nest brackets in practice), but the destination is matched with
+ * `findLinkDestinationEnd` above rather than a regex, since destinations
+ * routinely contain parentheses that a `[^)]+`-style pattern would stop
+ * at prematurely.
+ */
 function stashLinks(text: string, links: StashedLink[]): string {
-  return text.replace(LINK_PATTERN, (_match: string, linkText: string, url: string): string => {
+  let result = '';
+  let lastIndex = 0;
+  LINK_OPEN_PATTERN.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = LINK_OPEN_PATTERN.exec(text)) !== null) {
+    const destStart = LINK_OPEN_PATTERN.lastIndex;
+    const destEnd = findLinkDestinationEnd(text, destStart);
+    if (destEnd === -1) {
+      // Unterminated destination - not a valid link. Leave the `[text](`
+      // as-is and keep scanning after it.
+      continue;
+    }
+
+    result += text.slice(lastIndex, match.index);
     const token = LINK_TOKEN(links.length);
-    links.push({ text: linkText, url });
-    return token;
-  });
+    links.push({ text: match[1], url: text.slice(destStart, destEnd) });
+    result += token;
+
+    lastIndex = destEnd + 1;
+    LINK_OPEN_PATTERN.lastIndex = lastIndex;
+  }
+  result += text.slice(lastIndex);
+  return result;
 }
 
 /**
