@@ -256,3 +256,25 @@ describe('conversations_replies', () => {
     });
   });
 });
+
+describe('review fixes: activity filter and empty-page cursor', () => {
+  it('keeps non-activity subtypes (bot_message, file_share, thread_broadcast)', async () => {
+    const { filterActivity } = await import('./shared');
+    const messages = [
+      { ts: '1', subtype: 'bot_message', text: 'bot' },
+      { ts: '2', subtype: 'file_share', text: 'file' },
+      { ts: '3', subtype: 'thread_broadcast', text: 'bc' },
+      { ts: '4', subtype: 'channel_join', text: 'joined' },
+      { ts: '5', text: 'plain' },
+    ];
+    const kept = filterActivity(messages, false).map((m) => m.ts);
+    expect(kept).toEqual(['1', '2', '3', '5']);
+  });
+
+  it('emits a cursor-only row when every message of a page was filtered out', async () => {
+    const { withCursor } = await import('./shared');
+    const rows = withCursor([], 'next-cur');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.Cursor).toBe('next-cur');
+  });
+});

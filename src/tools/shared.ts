@@ -91,21 +91,54 @@ export function messageRow(
 }
 
 /**
+ * Channel-lifecycle `subtype`s that count as activity noise. Only these are
+ * dropped by {@link filterActivity}; content-bearing subtypes such as
+ * `bot_message`, `file_share`, `thread_broadcast`, or `me_message` are
+ * regular posts and must be kept.
+ */
+export const ACTIVITY_SUBTYPES: ReadonlySet<string> = new Set([
+  'channel_join',
+  'channel_leave',
+  'channel_topic',
+  'channel_purpose',
+  'channel_name',
+  'channel_archive',
+  'channel_unarchive',
+  'group_join',
+  'group_leave',
+  'group_topic',
+  'group_purpose',
+  'group_name',
+  'group_archive',
+  'group_unarchive',
+]);
+
+/**
  * Filters out activity messages (`channel_join`, `channel_leave`, …) unless
- * the caller asked to include them. Slack marks them with a `subtype`.
+ * the caller asked to include them. Only subtypes in
+ * {@link ACTIVITY_SUBTYPES} are removed — messages with other subtypes
+ * (`bot_message`, `file_share`, …) are ordinary content and pass through.
  */
 export function filterActivity(messages: SlackMessage[], includeActivity: boolean): SlackMessage[] {
   if (includeActivity) return messages;
-  return messages.filter((m) => m.subtype === undefined);
+  return messages.filter((m) => m.subtype === undefined || !ACTIVITY_SUBTYPES.has(m.subtype));
 }
 
 /**
  * Sets the `Cursor` cell of the LAST row to `nextCursor` (pagination
- * contract: the client passes it back as the `cursor` parameter). No-op on
- * an empty row set or an empty cursor. Mutates and returns `rows`.
+ * contract: the client passes it back as the `cursor` parameter).
+ *
+ * When every row of a page was filtered out but Slack still returned a
+ * cursor, a cursor-only row (all other cells empty) is appended so the
+ * caller can keep paginating instead of silently losing the rest of the
+ * conversation. No-op on an empty cursor. Mutates and returns `rows`.
  */
 export function withCursor(rows: Row[], nextCursor: string | undefined): Row[] {
-  if (rows.length === 0 || !nextCursor) return rows;
+  if (!nextCursor) return rows;
+  if (rows.length === 0) {
+    rows.push({ Cursor: nextCursor });
+    return rows;
+  }
   const last = rows[rows.length - 1];
   if (last) last.Cursor = nextCursor;
   return rows;
