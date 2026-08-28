@@ -9,23 +9,49 @@
 #   1. `npx wrangler login` (opens a browser; must be run by a human)
 #   2. Slack tokens at hand (xoxp and/or xoxb; both recommended)
 #
-# Usage: bash scripts/deploy.sh
+# Usage:
+#   bash scripts/deploy.sh
+#   WORKER_URL=https://slackrabbit.example.workers.dev bash scripts/deploy.sh
+#
+# The script FAILS (non-zero exit) when:
+#   - not logged in to Cloudflare
+#   - MCP_API_KEY is neither already set nor set during this run
+#   - the deployed URL cannot be determined (set WORKER_URL to override)
+#   - the unauthenticated post-deploy probe does not return 401
 set -euo pipefail
 
 say() { printf '%s\n' "$*"; }
+die() { say "ERROR: $*"; exit 1; }
 
 say "== 1/4 Cloudflare auth check =="
-if ! npx wrangler whoami >/dev/null 2>&1; then
-  say "Not logged in. Run:  npx wrangler login"
-  exit 1
-fi
+npx wrangler whoami >/dev/null 2>&1 || die "Not logged in. Run:  npx wrangler login"
 npx wrangler whoami | head -5
 
 say ""
 say "== 2/4 Secrets =="
 say "Each 'wrangler secret put' prompts for the value interactively."
 say "MCP_API_KEY should be a long random string, e.g.:  openssl rand -hex 32"
-for name in MCP_API_KEY SLACK_XOXP_TOKEN SLACK_XOXB_TOKEN; do
+
+existing_secrets="$(npx wrangler secret list 2>/dev/null || true)"
+has_secret() { printf '%s' "${existing_secrets}" | grep -q "\"${1}\""; }
+
+# MCP_API_KEY is mandatory: without it the Worker serves /mcp with NO auth.
+if has_secret MCP_API_KEY; then
+  say "MCP_API_KEY: already set."
+  printf 'Rotate it now? [y/N] '
+  read -r answer
+  [ "${answer}" = "y" ] || [ "${answer}" = "Y" ] && npx wrangler secret put MCP_API_KEY
+else
+  say "MCP_API_KEY is REQUIRED (an unset key disables authentication)."
+  npx wrangler secret put MCP_API_KEY || die "MCP_API_KEY was not set; aborting."
+fi
+
+# Slack tokens: at least one required by the Worker; both recommended.
+for name in SLACK_XOXP_TOKEN SLACK_XOXB_TOKEN; do
+  if has_secret "${name}"; then
+    say "${name}: already set (skip)."
+    continue
+  fi
   printf 'Set %s now? [y/N] ' "${name}"
   read -r answer
   if [ "${answer}" = "y" ] || [ "${answer}" = "Y" ]; then
@@ -45,18 +71,23 @@ say "not \"true\". Edit wrangler.jsonc before deploying if needed."
 
 say ""
 say "== 4/4 Deploy =="
-npx wrangler deploy
+deploy_out="$(npx wrangler deploy 2>&1)" || { printf '%s\n' "${deploy_out}"; die "wrangler deploy failed"; }
+printf '%s\n' "${deploy_out}"
 
 say ""
-say "Post-deploy check (expects 401 because no Authorization header is sent):"
-url="$(npx wrangler deployments list 2>/dev/null | grep -o 'https://[^ ]*workers.dev' | head -1 || true)"
-if [ -n "${url}" ]; then
-  code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "${url}/mcp" \
-    -H 'Content-Type: application/json' \
-    -H 'Accept: application/json, text/event-stream' \
-    -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}')"
-  say "POST ${url}/mcp -> ${code} (expected 401 when MCP_API_KEY is set)"
-else
-  say "Could not detect the workers.dev URL automatically; test manually:"
-  say "  curl -X POST https://slackrabbit.<your-subdomain>.workers.dev/mcp ..."
+say "== Post-deploy gate (unauthenticated probe must return 401) =="
+url="${WORKER_URL:-}"
+if [ -z "${url}" ]; then
+  # `wrangler deploy` prints the deployed URL; parse it from the output we
+  # just captured rather than relying on `deployments list` formatting.
+  url="$(printf '%s\n' "${deploy_out}" | grep -o 'https://[a-zA-Z0-9.-]*workers\.dev' | head -1 || true)"
 fi
+[ -n "${url}" ] || die "Could not determine the Worker URL. Re-run with WORKER_URL=https://... bash scripts/deploy.sh"
+
+code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "${url}/mcp" \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}')"
+say "POST ${url}/mcp (no auth) -> ${code}"
+[ "${code}" = "401" ] || die "Expected 401 for an unauthenticated request; got ${code}. Check that MCP_API_KEY is set (wrangler secret list)."
+say "OK: endpoint is deployed and protected."

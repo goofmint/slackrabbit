@@ -184,6 +184,30 @@ SLACK_MCP_ADD_MESSAGE_TOOL=${policy}"
         b="$(call_tool_body conversations_add_message "{\"channel_id\":\"${DENIED_CHANNEL_NAME}\",\"text\":\"should never appear\"}")"
         printf '%s' "${b}" | grep -q 'not allowed by SLACK_MCP_ADD_MESSAGE_TOOL' && ok "#17 denied channel (#name) rejected" || bad "#17 denied by #name"
       fi
+
+      # -- thread reply / markdown conversion / unfurl suppression ----------
+      # Post a markdown message with a link, read the created ts back from
+      # the tool result, reply into its thread, then fetch the thread and
+      # assert both the conversion (*bold* / <url|text>) and the reply.
+      md_text='**bold** [link](https://example.com/page)'
+      b="$(call_tool_body conversations_add_message "{\"channel_id\":\"${ALLOWED_CHANNEL}\",\"text\":\"${md_text}\",\"content_type\":\"text/markdown\"}")"
+      root_ts="$(printf '%s' "${b}" | grep -o 'ts=[0-9]*\.[0-9]*' | head -1 | cut -d= -f2)"
+      [ -n "${root_ts}" ] && ok "#17 markdown message posted (ts=${root_ts})" || bad "#17 markdown post: $(printf '%s' "${b}" | head -c 200)"
+
+      if [ -n "${root_ts}" ]; then
+        b="$(call_tool_body conversations_add_message "{\"channel_id\":\"${ALLOWED_CHANNEL}\",\"text\":\"slackrabbit verify: thread reply\",\"thread_ts\":\"${root_ts}\"}")"
+        printf '%s' "${b}" | grep -q "in thread ${root_ts}" && ok "#17 thread reply accepted" || bad "#17 thread reply: $(printf '%s' "${b}" | head -c 200)"
+
+        sleep 2
+        b="$(call_tool_body conversations_replies "{\"channel_id\":\"${ALLOWED_CHANNEL}\",\"thread_ts\":\"${root_ts}\"}")"
+        printf '%s' "${b}" | grep -q '\*bold\*' && printf '%s' "${b}" | grep -q 'example.com/page|link' \
+          && ok "#17 markdown converted to mrkdwn (*bold* / <url|text> visible in thread)" \
+          || bad "#17 markdown conversion not visible in thread: $(printf '%s' "${b}" | head -c 300)"
+        printf '%s' "${b}" | grep -q 'thread reply' && ok "#17 thread reply visible via conversations_replies" || bad "#17 thread reply not found in thread"
+      fi
+      say "  (unfurl suppression: unfurl_links/unfurl_media=false is asserted by unit tests"
+      say "   [src/tools/addMessage.test.ts] — the Slack API does not expose unfurl state on"
+      say "   the message object, so confirm visually that the posted link shows no preview)"
     else
       say "  (post-guard live checks skipped: export ALLOWED_CHANNEL / DENIED_CHANNEL [/ DENIED_CHANNEL_NAME])"
     fi

@@ -82,6 +82,9 @@ CodeRabbit ダッシュボード → Integrations → New MCP Server:
 `.coderabbit.yaml` に Slack 参照・投稿の指示を書く。例:
 
 ```yaml
+knowledge_base:
+  mcp:
+    usage: enabled   # 既定の auto は public リポジトリで MCP を無効化するため明示する
 reviews:
   path_instructions:
     - path: "**/*"
